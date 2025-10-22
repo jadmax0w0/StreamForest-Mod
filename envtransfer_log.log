@@ -1,0 +1,20 @@
+  Attempting uninstall: nvidia-ml-py
+    Found existing installation: nvidia-ml-py 13.580.65
+    Uninstalling nvidia-ml-py-13.580.65:
+      Successfully uninstalled nvidia-ml-py-13.580.65
+  Attempting uninstall: protobuf
+    Found existing installation: protobuf 6.32.0
+    Uninstalling protobuf-6.32.0:
+      Successfully uninstalled protobuf-6.32.0
+  Attempting uninstall: markdown-it-py
+    Found existing installation: markdown-it-py 4.0.0
+    Uninstalling markdown-it-py-4.0.0:
+      Successfully uninstalled markdown-it-py-4.0.0
+  Attempting uninstall: tokenizers
+    Found existing installation: tokenizers 0.21.4
+    Uninstalling tokenizers-0.21.4:
+      Successfully uninstalled tokenizers-0.21.4
+  Attempting uninstall: transformers
+    Found existing installation: transformers 4.49.0
+    Uninstalling transformers-4.49.0:
+      Successfully uninstalled transformers-4.49.0
