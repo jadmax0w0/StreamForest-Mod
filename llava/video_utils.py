@@ -416,17 +416,16 @@ def read_frames_img(
 def read_frames_img_list(video_path: list[str], **kwargs):
     """
     Returns:
-        tuple (frames, frame_indices, fps, duration):
-            frames: list[Image], frame_indices: list[int], fps: float, duration: float
+        (video, clipping_factor, frame_indices, fps, duration) (list[Tensor], int, list[int], float, float):
     """
     assert isinstance(video_path, list) and all([isinstance(s, str) for s in video_path]), \
         "if reading frames from image list, video_path should be a list and should contain only string paths of imgs"
     assert all([(not os.path.isdir(s)) for s in video_path]), \
         "if reading frames from image list, video_path should only contain pure image FILE paths; DIRECTORY paths are NOT allowed"
 
-    from video_utils_extend import fetch_video
+    from video_utils_extend import fetch_video, clip_video
 
-    frames, fps = fetch_video({"video": video_path}, return_video_sample_fps=True)
+    frames, fps = fetch_video({"video": video_path}, return_video_sample_fps=True)  # frames: list[Image]
     assert isinstance(frames, list)
 
     duration = len(frames) / fps
@@ -439,14 +438,14 @@ def read_frames_img_list(video_path: list[str], **kwargs):
         frame_indices.append(int(vid_filename))
     frame_indices = sorted(frame_indices)
 
-    # # 训练期间强制每个视频切分为4段
-    # video, _ = clip_video(video, fixed_count=4)  # video: list[Tensor]
-    # video = tuple(video)  # 使用 tuple 类型标记 tuple 内部的所有 Tensor 原本是一个视频
-    # inputs.videos[index] = video
-    # return ['<|vision_start|><|video_pad|><|vision_end|>'] * len(video)
-    # NOTE: 切分的时候可以先把 list[Image] 转为 tensor, 然后再把 tensor 切为 list[tensor]
+    # 训练期间强制每个视频切分为4段
+    video, clipping_factor = clip_video(frames, fixed_count=4)  # video: list[Tensor]
+
+    # Rearrange the loaded video
+    video = [v.permute(0, 2, 3, 1) for v in video]  # list of [T, C, H, W] -> [T, H, W, C]
+    video = tuple(video)  # 使用 tuple 类型标记 tuple 内部的所有 Tensor 原本是一个视频
     
-    return frames, frame_indices, fps, duration
+    return video, clipping_factor, frame_indices, fps, duration  # 后面三个有何用?
 
 
 def read_frames_fake(
