@@ -41,7 +41,7 @@ import deepspeed
 
 from transformers import AutoConfig
 from torch.utils.data import Dataset
-from llava.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
+from llava.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_VIDEO_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
 from llava.train.llava_trainer import LLaVATrainer
 
 from llava import conversation as conversation_lib
@@ -409,24 +409,69 @@ def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments, msg=
             # TODO maybe this should be changed for interleaved data?
             # if DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
             # only check for num_im=1
+
+            # Convert qwen format to llava format
+            if "value" not in sentence:
+                assert "content" in sentence
+                sentence["value"] = sentence["content"]
+                sentence.pop("content")
+                
+                assert "role" in sentence
+                sentence["from"] = sentence["role"]
+                sentence.pop("role")
+
+                if "user" in sentence["from"]:
+                    sentence["from"] = "human"
+                if "assis" in sentence["from"]:
+                    sentence["from"] = "gpt"
+
+            use_image_token = True
             num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-            if num_im == 1 and DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
-                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
-                sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
-                sentence["value"] = sentence["value"].strip()
-                if "mmtag" in conversation_lib.default_conversation.version:
-                    sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
-            replace_token = DEFAULT_IMAGE_TOKEN
-            if data_args.mm_use_im_start_end:
-                replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
-
-            if msg.rstrip() != "":
-                replace_token = replace_token + msg.rstrip() + " " # NOTE for time msg of video
+            if num_im <= 0:
+                use_image_token = False
+                num_im = len(re.findall(DEFAULT_VIDEO_TOKEN), sentence["value"])
             
-            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
+            if use_image_token:
+                if num_im == 1 and DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
+                    sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
+                    sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
+                    sentence["value"] = sentence["value"].strip()
+                    if "mmtag" in conversation_lib.default_conversation.version:
+                        sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
+                replace_token = DEFAULT_IMAGE_TOKEN
+                if data_args.mm_use_im_start_end:
+                    replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
 
-            # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
-            sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
+                if msg.rstrip() != "":
+                    replace_token = replace_token + msg.rstrip() + " " # NOTE for time msg of video
+                
+                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
+
+                # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
+                sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
+            
+            else:
+                if num_im == 1 and DEFAULT_VIDEO_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_VIDEO_TOKEN):
+                    # Move the <video> token to the start of sentence, and replace it with <image>
+                    sentence["value"] = sentence["value"].replace(DEFAULT_VIDEO_TOKEN, "").strip()
+                    sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
+                    sentence["value"] = sentence["value"].strip()
+                    if "mmtag" in conversation_lib.default_conversation.version:
+                        sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
+                replace_token = DEFAULT_IMAGE_TOKEN
+                if data_args.mm_use_im_start_end:
+                    replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+
+                if msg.rstrip() != "":
+                    replace_token = replace_token + msg.rstrip() + " " # NOTE for time msg of video
+                
+                if DEFAULT_VIDEO_TOKEN in sentence["value"]:
+                    sentence["value"] = sentence["value"].replace(DEFAULT_VIDEO_TOKEN, replace_token)
+                else:
+                    sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
+                
+                # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
+                sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
 
     return sources
 
@@ -1375,7 +1420,7 @@ class LazySupervisedDataset(Dataset):
         
         if video_reader_type == "imgs" or video_reader_type == "frames":
             video_reader = VIDEO_READER_FUNCS[video_reader_type]
-            frames, clipping_factor, frame_indices, fps, duration = video_reader(video_file)
+            frames, clipping_factor, frame_indices, fps, duration = video_reader(video_file)  # frames: list of [T, H, W, C] x N_clips
         elif clip is None or video_reader_type == "img":
             video_reader = VIDEO_READER_FUNCS[video_reader_type]
             if clip is not None and video_reader_type == "img":
@@ -1529,6 +1574,7 @@ class LazySupervisedDataset(Dataset):
 
                 # video: Tensor or ndarray if single, unclipped video; list[Tensor] if clipped video
                 if not isinstance(video, (list, tuple)):
+                    # Unify `video` representation to list
                     video = [video]
                 
                 image = []
@@ -1549,7 +1595,12 @@ class LazySupervisedDataset(Dataset):
 
                     image.append((img, vid[0].shape[0:2], "video"))  # (processed_img, (T, H, W), "video") x Nclips
                 
-                # sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, msg=time_msg)
+                # Append and prepend <image> or <video> tokens with image start & end tokens
+                for e in sources:
+                    if "conversations" not in e:
+                        assert "messages" in e
+                        e["conversations"] = e["messages"]
+                        e.pop("messages")
                 sources = preprocess_multimodal([e["conversations"] for e in sources], self.data_args, msg=time_msg)
 
             except Exception as e:
@@ -1561,7 +1612,7 @@ class LazySupervisedDataset(Dataset):
             sources = [e["conversations"] for e in sources]
 
         has_image = ("image" in self.list_data_dict[i]) or ("video" in self.list_data_dict[i])
-        data_dict = preprocess(sources, self.tokenizer, has_image=has_image)
+        data_dict = preprocess(sources, self.tokenizer, has_image=has_image)  # {"input_ids", "labels"}
 
         if "prompt" in data_dict:
             prompt = data_dict["prompt"]
@@ -1576,7 +1627,7 @@ class LazySupervisedDataset(Dataset):
         if "image" in self.list_data_dict[i]:
             data_dict["image"] = image
         elif "video" in self.list_data_dict[i]:
-            data_dict["image"] = image
+            data_dict["image"] = image  # (processed_img, (T, H, W), "video") x Nclips
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
