@@ -1530,23 +1530,24 @@ class LazySupervisedDataset(Dataset):
                 # video: Tensor or ndarray if single, unclipped video; list[Tensor] if clipped video
                 if not isinstance(video, (list, tuple)):
                     video = [video]
+                
+                image = []
 
-                for vid in video:
+                for vid in video:  # vid: [B=T, H, W, C]
                     # print(video_file, time_msg)
                     processor = self.data_args.image_processor
                     frame_aspect_ratio = self.data_args.frame_aspect_ratio
                     # if frame_aspect_ratio == "anyres" or "anyres_max" in frame_aspect_ratio:
                     if "anyres" in frame_aspect_ratio:
                         if 'nopad' in frame_aspect_ratio:
-                            image = process_anyres_video_nopad(vid, self.data_args.image_processor, self.data_args.frame_grid_pinpoints, max_resolutions=self.data_args.max_num_pixels // len(video))
+                            img = process_anyres_video_nopad(vid, self.data_args.image_processor, self.data_args.frame_grid_pinpoints, max_resolutions=self.data_args.max_num_pixels // len(video))
                         else:
                             raise NotImplementedError
                             # image = process_anyres_video(video, self.data_args.image_processor, self.data_args.frame_grid_pinpoints)
                     else:
-                        image = processor.preprocess(vid, return_tensors="pt")["pixel_values"]
-                    # TODO: 完善这边的逻辑
+                        img = processor.preprocess(vid, return_tensors="pt")["pixel_values"]  # NOTE: shape? [B=T, C, H, W]
 
-                    image = [(image, vid[0].shape[0:2], "video")]
+                    image.append((img, vid[0].shape[0:2], "video"))  # (processed_img, (T, H, W), "video") x Nclips
                 
                 # sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, msg=time_msg)
                 sources = preprocess_multimodal([e["conversations"] for e in sources], self.data_args, msg=time_msg)
@@ -1571,6 +1572,7 @@ class LazySupervisedDataset(Dataset):
             data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
 
         # image exist in the data
+        # data_dict["image"] is a list of tuples: (processed_img, (T, H, W), "video") x Nclips
         if "image" in self.list_data_dict[i]:
             data_dict["image"] = image
         elif "video" in self.list_data_dict[i]:
