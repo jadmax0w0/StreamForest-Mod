@@ -221,11 +221,11 @@ class LlavaMetaForCausalLM(ABC):
 
 
     def encode_image(self, images_list):
-        concat_images = torch.cat([image for image in images_list], dim=0)
+        concat_images = torch.cat([image for image in images_list], dim=0)  # [T, C, H, W]
         split_sizes = [image.shape[0] for image in images_list] 
 
         image_features = self.get_model().get_vision_tower()(concat_images)
-        image_features = self.get_model().mm_projector(image_features)
+        image_features = self.get_model().mm_projector(image_features)  # [1, N_total, C]
         image_features = torch.split(image_features, split_sizes)
 
         return image_features

@@ -275,7 +275,7 @@ class ToMe_FSTW_PEMF(nn.Module):
         dtype = x.dtype
         device = x.device
         height = width = self.hw
-        assert height * width == x.shape[1] // local_num_frames, x.shape
+        assert height * width == x.shape[1] // local_num_frames, x.shape  # x shape [T, HW, D]
         assert local_num_frames<=1, "<<<tome memory projector error>>> This memory not support loacl_num_frame > 1 !!!"
         total_num_frames = x.shape[0]
         
@@ -301,7 +301,7 @@ class ToMe_FSTW_PEMF(nn.Module):
         
         # memory_manager._update_long_memory()
         
-        x = memory_manager.get_memory_tokens()
+        x = memory_manager.get_memory_tokens()  # [1, N_total, C]
         
         # print("<<<Mark>>> x.shape after memory: ", x.shape)
         
