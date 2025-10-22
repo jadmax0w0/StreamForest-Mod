@@ -1140,6 +1140,7 @@ class LazySupervisedDataset(Dataset):
                         raise ValueError(f"Unsupported file type: {json_path}")
 
                     assert len(cur_data_dict) > 0, cur_data_dict
+                    # ^ cur_data_dict: list[jsonl strs]
 
                     media_type = dataset.get("media_type", None)
                     if media_type is None:
@@ -1147,6 +1148,8 @@ class LazySupervisedDataset(Dataset):
                             media_type = 'image'
                         elif 'video' in cur_data_dict[0].keys():
                             media_type = 'video'
+                        elif "videos" in cur_data_dict[0].keys():
+                            media_type = "videos"
                         else:
                             media_type = 'text'
 
@@ -1196,11 +1199,20 @@ class LazySupervisedDataset(Dataset):
                             else:
                                 return ori_path
                             
-                        for i in range(len(cur_data_dict)):
+                        for i in range(len(cur_data_dict)):  # 遍历所有 jsonl 行
                             if video_read_type != None:
-                                cur_data_dict[i]['video_read_type'] = video_read_type
+                                cur_data_dict[i]['video_read_type'] = video_read_type  # 给这个 jsonl 行添加一个域
     
-                            if type(cur_data_dict[i][media_type]) is list:
+                            # For jsonl format: {..., "videos": [[imgpath0, imgpath1, ..., imgpathN]]} (from qwen-like training data)
+                            # replace the above format with {..., "video": [imgpath0, imgpath1, ..., imgpathN]}
+                            if media_type == "videos":
+                                assert len(cur_data_dict[i][media_type]) == 1, \
+                                    "when training annotation json object contains \"videos\" field, make sure there is only one list element in this field (`list[list[str]]`)"
+                                videos = cur_data_dict[i].pop(media_type, [[]])
+                                cur_data_dict[i]["video"] = videos[0]
+                                media_type = "video"
+                            
+                            if type(cur_data_dict[i][media_type]) is list:  # 从 jsonl 中读取 "video" 或者 "image" 字段 (值为路径), 在原路径上添加上 data root 路径
                                 new_data_path = []
                                 for old_data_path in cur_data_dict[i][media_type]:
                                     new_data_path.append(os.path.join(data_root, old_data_path))
@@ -1212,6 +1224,7 @@ class LazySupervisedDataset(Dataset):
 
                     rank0_print(f"Check samples from {json_path}, media_type={media_type}, video_read_type={video_read_type}, data_root={data_root}")
 
+                    # 检查数据集路径是否存在
                     if media_type not in ['text', 'mix'] and video_read_type != 'fake':
                         ok = False
                         for i in range(3):
@@ -1250,7 +1263,7 @@ class LazySupervisedDataset(Dataset):
                 list_data_dict.extend(cur_data_dict)
         # else:
         #     list_data_dict = []
-        self.list_data_dict = list_data_dict
+        self.list_data_dict = list_data_dict  # 一个 dict 列表, 每个 dict 都是一个训练集中的 jsonl 对象
         # self.list_data_dict = TorchShmSerializedList(list_data_dict)
         rank0_print(f"Loaded {len(self.list_data_dict)} samples from {data_path}")
         rank0_print("Formatting inputs...Skip in lazy mode")
@@ -1360,7 +1373,10 @@ class LazySupervisedDataset(Dataset):
         else:
             clip = None
         
-        if clip is None or video_reader_type == "img":
+        if video_reader_type == "imgs" or video_reader_type == "frames":
+            video_reader = VIDEO_READER_FUNCS[video_reader_type]
+            frames, clipping_factor, frame_indices, fps, duration = video_reader(video_file)
+        elif clip is None or video_reader_type == "img":
             video_reader = VIDEO_READER_FUNCS[video_reader_type]
             if clip is not None and video_reader_type == "img":
                 if_exist_fps=None
@@ -1511,20 +1527,27 @@ class LazySupervisedDataset(Dataset):
             try:
                 video, time_msg = self.process_video(video_file, data_anno=self.list_data_dict[i], data_args=self.data_args)
 
-                # print(video_file, time_msg)
-                processor = self.data_args.image_processor
-                frame_aspect_ratio = self.data_args.frame_aspect_ratio
-                # if frame_aspect_ratio == "anyres" or "anyres_max" in frame_aspect_ratio:
-                if "anyres" in frame_aspect_ratio:
-                    if 'nopad' in frame_aspect_ratio:
-                        image = process_anyres_video_nopad(video, self.data_args.image_processor, self.data_args.frame_grid_pinpoints, max_resolutions=self.data_args.max_num_pixels // len(video))
-                    else:
-                        raise NotImplementedError
-                        # image = process_anyres_video(video, self.data_args.image_processor, self.data_args.frame_grid_pinpoints)
-                else:
-                    image = processor.preprocess(video, return_tensors="pt")["pixel_values"]
+                # video: Tensor or ndarray if single, unclipped video; list[Tensor] if clipped video
+                if not isinstance(video, (list, tuple)):
+                    video = [video]
 
-                image = [(image, video[0].shape[0:2], "video")]
+                for vid in video:
+                    # print(video_file, time_msg)
+                    processor = self.data_args.image_processor
+                    frame_aspect_ratio = self.data_args.frame_aspect_ratio
+                    # if frame_aspect_ratio == "anyres" or "anyres_max" in frame_aspect_ratio:
+                    if "anyres" in frame_aspect_ratio:
+                        if 'nopad' in frame_aspect_ratio:
+                            image = process_anyres_video_nopad(vid, self.data_args.image_processor, self.data_args.frame_grid_pinpoints, max_resolutions=self.data_args.max_num_pixels // len(video))
+                        else:
+                            raise NotImplementedError
+                            # image = process_anyres_video(video, self.data_args.image_processor, self.data_args.frame_grid_pinpoints)
+                    else:
+                        image = processor.preprocess(vid, return_tensors="pt")["pixel_values"]
+                    # TODO: 完善这边的逻辑
+
+                    image = [(image, vid[0].shape[0:2], "video")]
+                
                 # sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, msg=time_msg)
                 sources = preprocess_multimodal([e["conversations"] for e in sources], self.data_args, msg=time_msg)
 
