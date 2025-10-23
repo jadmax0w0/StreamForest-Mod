@@ -25,6 +25,7 @@ from typing import Dict, Optional, Sequence, List
 from PIL import Image, ImageFile
 from packaging import version
 import numpy as np
+from tqdm import tqdm
 
 import gc
 import io
@@ -410,68 +411,25 @@ def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments, msg=
             # if DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
             # only check for num_im=1
 
-            # Convert qwen format to llava format
-            if "value" not in sentence:
-                assert "content" in sentence
-                sentence["value"] = sentence["content"]
-                sentence.pop("content")
-                
-                assert "role" in sentence
-                sentence["from"] = sentence["role"]
-                sentence.pop("role")
-
-                if "user" in sentence["from"]:
-                    sentence["from"] = "human"
-                if "assis" in sentence["from"]:
-                    sentence["from"] = "gpt"
-
-            use_image_token = True
             num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-            if num_im <= 0:
-                use_image_token = False
-                num_im = len(re.findall(DEFAULT_VIDEO_TOKEN), sentence["value"])
             
-            if use_image_token:
-                if num_im == 1 and DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
-                    sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
-                    sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
-                    sentence["value"] = sentence["value"].strip()
-                    if "mmtag" in conversation_lib.default_conversation.version:
-                        sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
-                replace_token = DEFAULT_IMAGE_TOKEN
-                if data_args.mm_use_im_start_end:
-                    replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+            if num_im == 1 and DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
+                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
+                sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
+                sentence["value"] = sentence["value"].strip()
+                if "mmtag" in conversation_lib.default_conversation.version:
+                    sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
+            replace_token = DEFAULT_IMAGE_TOKEN
+            if data_args.mm_use_im_start_end:
+                replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
 
-                if msg.rstrip() != "":
-                    replace_token = replace_token + msg.rstrip() + " " # NOTE for time msg of video
-                
-                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
-
-                # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
-                sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
+            if msg.rstrip() != "":
+                replace_token = replace_token + msg.rstrip() + " " # NOTE for time msg of video
             
-            else:
-                if num_im == 1 and DEFAULT_VIDEO_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_VIDEO_TOKEN):
-                    # Move the <video> token to the start of sentence, and replace it with <image>
-                    sentence["value"] = sentence["value"].replace(DEFAULT_VIDEO_TOKEN, "").strip()
-                    sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
-                    sentence["value"] = sentence["value"].strip()
-                    if "mmtag" in conversation_lib.default_conversation.version:
-                        sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
-                replace_token = DEFAULT_IMAGE_TOKEN
-                if data_args.mm_use_im_start_end:
-                    replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
-                if msg.rstrip() != "":
-                    replace_token = replace_token + msg.rstrip() + " " # NOTE for time msg of video
-                
-                if DEFAULT_VIDEO_TOKEN in sentence["value"]:
-                    sentence["value"] = sentence["value"].replace(DEFAULT_VIDEO_TOKEN, replace_token)
-                else:
-                    sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
-                
-                # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
-                sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
+            # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
+            sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
 
     return sources
 
@@ -1191,10 +1149,8 @@ class LazySupervisedDataset(Dataset):
                     if media_type is None:
                         if 'image' in cur_data_dict[0].keys(): # NOTE 碰到混合数据可能会出错
                             media_type = 'image'
-                        elif 'video' in cur_data_dict[0].keys():
-                            media_type = 'video'
-                        elif "videos" in cur_data_dict[0].keys():
-                            media_type = "videos"
+                        elif 'video' in cur_data_dict[0].keys() or "videos" in cur_data_dict[0].keys():
+                            media_type = "video"
                         else:
                             media_type = 'text'
 
@@ -1230,6 +1186,8 @@ class LazySupervisedDataset(Dataset):
                     video_read_type = dataset.get("video_read_type", None)
                     data_root = dataset.get("data_root", "")
 
+                    anno_type = str(dataset.get("anno_type", "")).lower()
+
                     # try:
                         # post-process meta info
                     if media_type not in ['text', 'mix']:
@@ -1243,20 +1201,33 @@ class LazySupervisedDataset(Dataset):
                                 return data_prefix + '://' + new_bucket_name + '/' + data_path
                             else:
                                 return ori_path
-                            
-                        for i in range(len(cur_data_dict)):  # 遍历所有 jsonl 行
+                        
+                        for i in tqdm(range(len(cur_data_dict)), desc="Processing data annotations", total=len(cur_data_dict)):  # 遍历所有 jsonl 行
                             if video_read_type != None:
                                 cur_data_dict[i]['video_read_type'] = video_read_type  # 给这个 jsonl 行添加一个域
     
-                            # For jsonl format: {..., "videos": [[imgpath0, imgpath1, ..., imgpathN]]} (from qwen-like training data)
-                            # replace the above format with {..., "video": [imgpath0, imgpath1, ..., imgpathN]}
-                            if media_type == "videos":
-                                assert len(cur_data_dict[i][media_type]) == 1, \
-                                    "when training annotation json object contains \"videos\" field, make sure there is only one list element in this field (`list[list[str]]`)"
-                                videos = cur_data_dict[i].pop(media_type, [[]])
-                                cur_data_dict[i]["video"] = videos[0]
-                                media_type = "video"
-                            
+                            # For jsonl format: {"messages": "role, content"..., "videos": [[imgpath0, imgpath1, ..., imgpathN]]} (from qwen-like training data)
+                            # replace the above format with {"conversations": "from, value"..., "video": [imgpath0, imgpath1, ..., imgpathN]}
+                            # TODO: 直接改标注文件, 改为 llava 格式
+                            if anno_type == "qwen":
+                                # Process "videos" field
+                                videos = cur_data_dict[i].pop("videos", cur_data_dict[i].pop("video", [[]]))
+                                if len(videos) == 1 and isinstance(videos[0], list):
+                                    videos = videos[0]
+                                cur_data_dict[i]["video"] = videos
+
+                                # Process "messages" field (and "content" "role" sub-field)
+                                cur_data_dict[i]["conversations"] = cur_data_dict[i].pop("messages", cur_data_dict[i].pop("conversations", None))
+                                for sentence in cur_data_dict[i]["conversations"]:
+                                    sentence["value"] = sentence.pop("content", sentence.pop("value", None))
+                                    sentence["from"] = sentence.pop("role", sentence.pop("from", None))
+                                    if "user" in sentence["from"]:  # how to call user
+                                        sentence["from"] = "human"
+                                    elif "assis" in sentence["from"]:  # how to call assistant
+                                        sentence["from"] = "gpt"
+                                    if DEFAULT_VIDEO_TOKEN in sentence["value"]:  # how to mark mm-content
+                                        sentence["value"] = sentence["value"].replace(DEFAULT_VIDEO_TOKEN, DEFAULT_IMAGE_TOKEN)
+
                             if type(cur_data_dict[i][media_type]) is list:  # 从 jsonl 中读取 "video" 或者 "image" 字段 (值为路径), 在原路径上添加上 data root 路径
                                 new_data_path = []
                                 for old_data_path in cur_data_dict[i][media_type]:
@@ -1508,6 +1479,9 @@ class LazySupervisedDataset(Dataset):
         return frames, msg
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+        import pdb
+        print("*** dataset get item bp ***")
+        pdb.set_trace()
         # TODO: define number of retries somewhere else
         num_base_retries = 2
         num_final_retries = 300
@@ -1581,8 +1555,8 @@ class LazySupervisedDataset(Dataset):
 
                 for vid in video:  # vid: [B=T, H, W, C]
                     # print(video_file, time_msg)
-                    processor = self.data_args.image_processor
-                    frame_aspect_ratio = self.data_args.frame_aspect_ratio
+                    processor = self.data_args.image_processor  # llava.model.multimodal_encoder.siglip_encoder.SigLipImageProcessor
+                    frame_aspect_ratio = self.data_args.frame_aspect_ratio  # square
                     # if frame_aspect_ratio == "anyres" or "anyres_max" in frame_aspect_ratio:
                     if "anyres" in frame_aspect_ratio:
                         if 'nopad' in frame_aspect_ratio:
@@ -1591,16 +1565,16 @@ class LazySupervisedDataset(Dataset):
                             raise NotImplementedError
                             # image = process_anyres_video(video, self.data_args.image_processor, self.data_args.frame_grid_pinpoints)
                     else:
-                        img = processor.preprocess(vid, return_tensors="pt")["pixel_values"]  # NOTE: shape? [B=T, C, H, W]
+                        img = processor.preprocess(vid, return_tensors="pt")["pixel_values"]  # NOTE: shape [B=T, C=3, h=384, w=384]
 
-                    image.append((img, vid[0].shape[0:2], "video"))  # (processed_img, (T, H, W), "video") x Nclips
+                    image.append((img, vid[0].shape[0:2], "video"))  # (processed_img[T, C, h, w], (H, W), "video") x Nclips
                 
                 # Append and prepend <image> or <video> tokens with image start & end tokens
-                for e in sources:
-                    if "conversations" not in e:
-                        assert "messages" in e
-                        e["conversations"] = e["messages"]
-                        e.pop("messages")
+                # for e in sources:
+                #     if "conversations" not in e:
+                #         assert "messages" in e
+                #         e["conversations"] = e["messages"]
+                #         e.pop("messages")
                 sources = preprocess_multimodal([e["conversations"] for e in sources], self.data_args, msg=time_msg)
 
             except Exception as e:
@@ -1749,6 +1723,10 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
             cfg_pretrained = AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
         else:
             cfg_pretrained = AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
+        
+        # 预训练的 ckpt 里面有错误的 vision tower 路径
+        if "mm_vision_tower" in cfg_pretrained:
+            setattr(cfg_pretrained, "mm_vision_tower", model_args.vision_tower)
     else:
         raise NotImplementedError(model_args)
     
@@ -1868,6 +1846,9 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                 )
             else:
                 print("<<< Init training Model Type: LlavaQwenForCausalLM >>>")
+                import pdb
+                print("*** load model bp ***")
+                pdb.set_trace()
                 model = LlavaQwenForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     cache_dir=training_args.cache_dir,
@@ -2170,6 +2151,7 @@ def train(attn_implementation=None):
                 for name, param in model.named_parameters():
                     if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name:
                         param.requires_grad_(True)
+            # TODO: 在这里加上自己的模块
 
         total_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters())
         trainable_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters() if p.requires_grad)

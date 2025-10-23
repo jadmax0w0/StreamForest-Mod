@@ -1,6 +1,7 @@
 datasets:
 
-  - json_path: ./llava_video_100k.jsonl
-  - data_root: .
-  - sampling_strategy: all
-  - video_read_type: imgs
+  - json_path: ./videochat_flash_3k.jsonl
+    data_root: .
+    sampling_strategy: all
+    video_read_type: imgs
+    anno_type: qwen
