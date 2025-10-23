@@ -80,6 +80,9 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         # print("images[0].shape:", images[0].shape)
+        import pdb
+        print("*** forwarding ***")
+        pdb.set_trace()
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities, image_sizes)
 

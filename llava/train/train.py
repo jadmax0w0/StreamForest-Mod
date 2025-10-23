@@ -1479,9 +1479,7 @@ class LazySupervisedDataset(Dataset):
         return frames, msg
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        import pdb
-        print("*** dataset get item bp ***")
-        pdb.set_trace()
+        rank0_print(f"*** getting data point {i} ***")
         # TODO: define number of retries somewhere else
         num_base_retries = 2
         num_final_retries = 300
@@ -1553,6 +1551,7 @@ class LazySupervisedDataset(Dataset):
                 
                 image = []
 
+                clips = []
                 for vid in video:  # vid: [B=T, H, W, C]
                     # print(video_file, time_msg)
                     processor = self.data_args.image_processor  # llava.model.multimodal_encoder.siglip_encoder.SigLipImageProcessor
@@ -1565,21 +1564,21 @@ class LazySupervisedDataset(Dataset):
                             raise NotImplementedError
                             # image = process_anyres_video(video, self.data_args.image_processor, self.data_args.frame_grid_pinpoints)
                     else:
-                        img = processor.preprocess(vid, return_tensors="pt")["pixel_values"]  # NOTE: shape [B=T, C=3, h=384, w=384]
+                        clip = processor.preprocess(vid, return_tensors="pt")["pixel_values"]  # NOTE: shape [B=t, C=3, h=384, w=384]
+                    
+                    clips.append(clip)
 
-                    image.append((img, vid[0].shape[0:2], "video"))  # (processed_img[T, C, h, w], (H, W), "video") x Nclips
+                image.append((tuple(clips), video[0][0].shape[0:2], "video"))  # ([clips each [t, C, h, w], (H, W), "video"])
+                # image.extend([(clip, vid[0].shape[0:2], "video") for clip, vid in zip(clips, video)])  # (processed_img[T, C, h, w], (H, W), "video") x Nclips
+
+                # clip_split_sizes = [clip.shape[0] for clip in clips]
                 
                 # Append and prepend <image> or <video> tokens with image start & end tokens
-                # for e in sources:
-                #     if "conversations" not in e:
-                #         assert "messages" in e
-                #         e["conversations"] = e["messages"]
-                #         e.pop("messages")
                 sources = preprocess_multimodal([e["conversations"] for e in sources], self.data_args, msg=time_msg)
 
             except Exception as e:
                 print(f"Error: {e}")
-                print(f"Failed to read video file: {video_file}")
+                print(f"Failed to read video file: {f'[{video_file[0]}, ...]' if isinstance(video_file, list) else video_file}")
                 raise e
         else:
             # sources = copy.deepcopy([e["conversations"] for e in sources]) # NOTE epoch>1时会出问题，最好提前处理了
@@ -1611,6 +1610,11 @@ class LazySupervisedDataset(Dataset):
         # prompt exist in the data
         if prompt is not None:
             data_dict["prompt"] = prompt
+        
+        # try:
+        #     data_dict["clip_split_sizes"] = clip_split_sizes
+        # except UnboundLocalError:
+        #     data_dict["clip_split_sizes"] = None
 
         data_dict["id"] = self.list_data_dict[i].get("id", i)
         
@@ -1647,12 +1651,12 @@ class DataCollatorForSupervisedDataset(object):
         # batch = dict(input_ids=input_ids, labels=labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id), ids=ids)
 
         if "image" in instances[0]:
-            images = [instance["image"] for instance in instances]
+            images = [instance["image"] for instance in instances]  # instance["image"] = [(tuple(tensors), [H, W], "video")]
             # data_format: [image/video, spatial_size, media_type]
             batch["image_sizes"] = [im[1] for im_list in images for im in im_list]
             batch["modalities"] = [im[2] for im_list in images for im in im_list]
             images = [im[0] for im_list in images for im in im_list] # flatten multi-images
-            # 拉平多图应该没有影响，只要后面顺序对的上就行
+            # 拉平多图应该没有影响，只要后面顺序对的上就行  改: 每个 instance["image"] 此时代表一个被分为 4 段的视频, 使用一个 Tuple[Tensor] 来表示. 但是在后面的 pin_memory 操作中, 会把这里的 tuple 改为 list, 不知道为什么
             # use list for input of different lengths
             # if all(x is not None and x.shape == images[0].shape for x in images):
                 # Image: (N, P, C, H, W)

@@ -9,6 +9,7 @@ export NCCL_SOCKET_IFNAME=bond0
 export NCCL_IB_HCA=mlx5_0,mlx5_2
 export TRITON_CACHE_DIR="/tmp/triton3"
 export NCCL_P2P_LEVEL=NVL
+export CUDA_VISIBLE_DEVICES=0
 # export NCCL_DEBUG="INFO"
 mkdir -p $TRITON_CACHE_DIR
 
@@ -45,7 +46,7 @@ mkdir -p ${OUTPUT_DIR}/runs
 #     --cpus-per-task=16 \
 #     --kill-on-bad-exit=1 \
 python -u llava/train/train_mem.py \
-    --deepspeed scripts/deepspeed/zero3.json \
+    --deepspeed scripts/deepspeed/zero2.json \
     --model_name_or_path ${LLM_VERSION} \
     --version ${PROMPT_VERSION} \
     --data_path ${DATA_VERSION} \
@@ -63,7 +64,7 @@ python -u llava/train/train_mem.py \
     --num_train_epochs 1 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 8 \
+    --gradient_accumulation_steps 1
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 1000 \
@@ -77,7 +78,7 @@ python -u llava/train/train_mem.py \
     --model_max_length 32768 \
     --gradient_checkpointing True \
     --dataloader_num_workers 0 \
-    --lazy_preprocess True \
+    --lazy_preprocess False \
     --report_to tensorboard \
     --torch_compile True \
     --torch_compile_backend "inductor" \

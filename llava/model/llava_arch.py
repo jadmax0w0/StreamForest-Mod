@@ -220,11 +220,18 @@ class LlavaMetaForCausalLM(ABC):
         return image_feature
 
 
-    def encode_image(self, images_list):
+    def encode_image(self, images_list, specified_vision_tower = None):
         concat_images = torch.cat([image for image in images_list], dim=0)  # [T, C, H, W]
         split_sizes = [image.shape[0] for image in images_list] 
 
-        image_features = self.get_model().get_vision_tower()(concat_images)
+        vision_tower = specified_vision_tower if specified_vision_tower is not None else self.get_model().get_vision_tower()
+        image_features = vision_tower(concat_images)
+        """
+        (Pdb) p concat_images.shape
+            torch.Size([66, 3, 384, 384])
+        (Pdb) p image_features.shape
+            torch.Size([66, 729, 1152])  # [T, L, D]
+        """
         image_features = self.get_model().mm_projector(image_features)  # [1, N_total, C]
         image_features = torch.split(image_features, split_sizes)
 
@@ -620,6 +627,8 @@ class LlavaMetaForCausalLM(ABC):
 
         
     def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities=["image"], image_sizes=None):
+        import pdb
+        pdb.set_trace()
         # Note position_ids is none here
         assert type(modalities) is list, modalities
         
@@ -629,10 +638,16 @@ class LlavaMetaForCausalLM(ABC):
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
 
         if type(images) is list or images.ndim == 5:
+            clip_split_sizes = None
+            # If the input `images` contains a list of clipped video clips...
+            if len(images) == 1 and isinstance(images[0], list):  # images: [one_video=[clips]]
+                clip_split_sizes = [clip.shape[0] for clip in images[0]]
+                images = [torch.cat(images[0], dim=0)]
+            
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
 
-            video_idx_in_batch = []
+            video_idx_in_batch = []  # 跟踪输入的 images 列表里面哪些是 video
             for _ in range(len(modalities)):
                 if modalities[_] == "video":
                     video_idx_in_batch.append(_)
@@ -644,11 +659,11 @@ class LlavaMetaForCausalLM(ABC):
                 else:
                     images_list.append(image.unsqueeze(0))
             
-            vision_encode_type = getattr(self.config, "vision_encode_type", "image")
-            mm_patch_merge_type = getattr(self.config, "mm_patch_merge_type", "flat")
-            image_aspect_ratio = getattr(self.config, "image_aspect_ratio", "square")
-            frame_aspect_ratio = getattr(self.config, "frame_aspect_ratio", "square")
-            mm_newline_position = getattr(self.config, "mm_newline_position", "nothing")
+            vision_encode_type = getattr(self.config, "vision_encode_type", "image")  # image
+            mm_patch_merge_type = getattr(self.config, "mm_patch_merge_type", "flat")  # flat
+            image_aspect_ratio = getattr(self.config, "image_aspect_ratio", "square")  # square
+            frame_aspect_ratio = getattr(self.config, "frame_aspect_ratio", "square")  # square
+            mm_newline_position = getattr(self.config, "mm_newline_position", "nothing")  # one_token
 
             if "anyres" in frame_aspect_ratio:
                 rank0_print("<<NOTE>> anyres in frame_aspect_ratio")
@@ -684,7 +699,7 @@ class LlavaMetaForCausalLM(ABC):
             # rank0_print(self.config)
             # TODO image: share vit&connector for image/video, image_video:, video
             if vision_encode_type == "image": # image backbone, process video by frame
-                image_features = self.encode_image(images_list)
+                image_features = self.encode_image(images_list, specified_vision_tower=vision_tower)
             elif vision_encode_type == "video": # video backbone, process video with compress
                 image_features = self.encode_video(images_list, video_idx_in_batch=video_idx_in_batch)
             elif vision_encode_type == "image_video": # image backbone, process video with compress
