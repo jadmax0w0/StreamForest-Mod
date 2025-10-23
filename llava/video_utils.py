@@ -423,12 +423,10 @@ def read_frames_img_list(video_path: list[str], **kwargs):
     assert all([(not os.path.isdir(s)) for s in video_path]), \
         "if reading frames from image list, video_path should only contain pure image FILE paths; DIRECTORY paths are NOT allowed"
 
-    from video_utils_extend import fetch_video, clip_video
+    from .video_utils_extend import fetch_video, clip_video
 
-    frames, fps = fetch_video({"video": video_path}, return_video_sample_fps=True)  # frames: list[Image]
+    frames, sample_fps = fetch_video({"video": video_path}, return_video_sample_fps=True)  # frames: list[Image]
     assert isinstance(frames, list)
-
-    duration = len(frames) / fps
 
     # Get frame indices
     frame_indices = []
@@ -437,6 +435,14 @@ def read_frames_img_list(video_path: list[str], **kwargs):
         vid_filename = os.path.splitext(os.path.split(path)[-1])[0]
         frame_indices.append(int(vid_filename))
     frame_indices = sorted(frame_indices)
+
+    # Get video original fps
+    sample_interval = 0
+    for i, j in zip(frame_indices[:-1], frame_indices[1:]):
+        sample_interval += (j - i) / sample_fps
+    fps = sample_interval / (len(frame_indices) - 1)
+
+    duration = frame_indices[-1] / fps
 
     # 训练期间强制每个视频切分为4段
     video, clipping_factor = clip_video(frames, fixed_count=4)  # video: list[Tensor]
