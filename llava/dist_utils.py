@@ -76,16 +76,20 @@ def init_distributed_mode(use_dynamic_port: bool = True):
         os.environ["LOCAL_RANK"] = str(local_rank)
         os.environ["LOCAL_WORLD_SIZE"] = str(local_size)
         os.environ["WORLD_SIZE"] = str(world_size)
+    
+    elif "RANK" in os.environ:
+        rank = int(os.environ["RANK"])
 
     else:
-        rank = int(os.environ["RANK"])
+        rank = 0
 
     setup_for_distributed(rank == 0)
 
-    print(
-        f"Rank {os.environ['RANK']} | Local Rank {os.environ['LOCAL_RANK']} | "
-        f"World Size {os.environ['WORLD_SIZE']} | Local World Size {os.environ['LOCAL_WORLD_SIZE']} |",
-        force=True
-    )
+    if "RANK" in os.environ and "LOCAL_RANK" in os.environ:
+        print(
+            f"Rank {os.environ['RANK']} | Local Rank {os.environ['LOCAL_RANK']} | "
+            f"World Size {os.environ['WORLD_SIZE']} | Local World Size {os.environ['LOCAL_WORLD_SIZE']} |",
+            force=True
+        )
 
 

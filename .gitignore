@@ -25,3 +25,10 @@ annotations
 
 demo/video
 work_dirs
+
+LLaVA*
+llava_*
+tarsier2*
+timechat*
+time_chat*
+videochat*
