@@ -6,6 +6,7 @@ import torch.nn as nn
 from transformers import PreTrainedTokenizer
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
 from typing import Optional
+from tqdm import tqdm
 
 
 def custom_weight_init(module: nn.Module):
@@ -18,7 +19,7 @@ def custom_weight_init(module: nn.Module):
 def check_params_consistency(module: nn.Module, threshold: float = 5.0):
     consistent = True
     inconsis_params = []
-    for name, param in module.named_parameters():
+    for name, param in tqdm(module.named_parameters()):
         if torch.isinf(param).any() or torch.isnan(param).any() or (torch.abs(param) > threshold).any():
             # print(f"Parameter {name} is probably inconsistent: \n{param}")
             print(f"Parameter {name} is probably inconsistent")
@@ -42,7 +43,7 @@ def model_weight_init(model: LlavaQwenForCausalLM, tokenizer: PreTrainedTokenize
         params = None
 
     print("Checking parameters consistency")
-    consistent, inconsis_params = check_params_consistency(model, 500)
+    consistent, inconsis_params = check_params_consistency(model.get_model().memory, 5)
 
     if not consistent:
         print("Detected incomplete model")

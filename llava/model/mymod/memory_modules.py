@@ -695,6 +695,7 @@ class Memories(nn.Module):
             `(STM mem, LTM mem, Mem grid THW, STM scatter lengths, LTM scatter lengths)`, STM/LTM mem shaped like `[1, vid_seq_len, model_dim]`. 使用 grid THW 的时候记得调整其 device, dtype, requires_grad 属性
         """
         printr(0, f"v2.4.3-ltm-all-sattn-prebuildgraph-ngranu")
+        printr(0, f"{self.sl_interact.scale_gamma.a.data=},\n{self.sl_interact.scale_gamma.b.data=}")
         printr(0, f"gnode_proj weight updated: {(self.ltm.gnode_proj[2].weight.clone().detach() != self.gnode_proj_weight_cache).any().item() if self.gnode_proj_weight_cache is not None else None}")
         printr(0, f"decoder h2h qproj weight updated: {(self.ltm.decoders_hist_to_hist[0].layers[0].attn.q_proj.weight.clone().detach() != self.decoder_h2h_weight_cache).any().item() if self.decoder_h2h_weight_cache is not None else None}")
         self.gnode_proj_weight_cache = self.ltm.gnode_proj[2].weight.clone().detach()
