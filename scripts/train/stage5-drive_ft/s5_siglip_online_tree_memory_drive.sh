@@ -9,7 +9,7 @@ export NCCL_SOCKET_IFNAME=bond0
 export NCCL_IB_HCA=mlx5_0,mlx5_2
 export TRITON_CACHE_DIR="/tmp/triton3"
 export NCCL_P2P_LEVEL=NVL
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export NCCL_DEBUG="INFO"
 mkdir -p $TRITON_CACHE_DIR
 
@@ -41,12 +41,14 @@ OUTPUT_DIR=ckpt/stage5-driveft-qwen-siglip/${MID_RUN_NAME}
 mkdir -p ${OUTPUT_DIR}/runs
 
 # srun -p ${PARTITION} \
+#     --nodes=1 \
 #     --job-name=${JOB_NAME} \
-#     --ntasks=1 \
-#     --gres=gpu:1 \
+#     --ntasks=8 \
+#     --gres=gpu:8 \
+#     --ntasks-per-node=8 \
 #     --cpus-per-task=16 \
 #     --kill-on-bad-exit=1 \
-python -u llava/train/train_mem.py \
+deepspeed llava/train/train_mem.py \
     --deepspeed scripts/deepspeed/zero2.json \
     --model_name_or_path ${LLM_VERSION} \
     --version ${PROMPT_VERSION} \
@@ -65,7 +67,7 @@ python -u llava/train/train_mem.py \
     --num_train_epochs 1 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 1 \
+    --gradient_accumulation_steps 8 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 1000 \
@@ -78,9 +80,11 @@ python -u llava/train/train_mem.py \
     --tf32 True \
     --model_max_length 32768 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 0 \
-    --lazy_preprocess False \
+    --dataloader_num_workers 4 \
+    --lazy_preprocess True \
     --report_to tensorboard \
+    --torch_compile True \
+    --torch_compile_backend "inductor" \
     --dataloader_drop_last True \
     --frames_upbound 512 \
     --frames_lowbound 4 \
@@ -92,5 +96,5 @@ python -u llava/train/train_mem.py \
     --mm_num_compress_latents 128 \
     --mm_num_compress_query_type pooling \
     --mm_close_init True \
-    --mm_local_num_frames 1 #\
-    #2>&1 | tee ${OUTPUT_DIR}/runs/${MID_RUN_NAME}.log
+    --mm_local_num_frames 1 \
+    2>&1 | tee ${OUTPUT_DIR}/runs/${MID_RUN_NAME}.log
