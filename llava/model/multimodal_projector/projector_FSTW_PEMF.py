@@ -173,6 +173,9 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 class ToMe_FSTW_PEMF(nn.Module):
     def __init__(self, config, vision_cfg):
         super().__init__()
+
+        self.enabled = True
+
         self._config = config
         self.mm_hidden_size = config.mm_hidden_size
         self.hw = vision_cfg.image_size // vision_cfg.patch_size
@@ -270,6 +273,10 @@ class ToMe_FSTW_PEMF(nn.Module):
         return x
 
     def forward(self, x, local_num_frames, is_image=False): # 单帧49
+        """
+        Returns:
+            mlped_ensor (tensor): shape `[T, L=729, D=3584]` if `is_image` and not `self.enabled`
+        """
         # print("is image: ", is_image)
         # raise ValueError("You are pooler!!!")
         dtype = x.dtype
@@ -281,11 +288,10 @@ class ToMe_FSTW_PEMF(nn.Module):
         
         image_tokens = [729, 128]
         
-        if is_image:
+        if is_image or self.enabled == False:  # no memory is needed here
             spatial_pos = self.get_spatial_pos_embed(new_grid_size=height, device=x.device).to(x.dtype).repeat(x.shape[0], 1, 1)
             x = x + spatial_pos
-            random_number = random.randint(0, 1)
-            num_image_tokens = image_tokens[random_number]
+            num_image_tokens = image_tokens[random.randint(0, 1) if self.enabled else 0]  # no merging if not enabled
             x = self.merge_tokens(x, target_num_token=num_image_tokens)
             x = self.mlp(x)
             return x

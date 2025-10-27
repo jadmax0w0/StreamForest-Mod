@@ -40,6 +40,11 @@ def build_vision_projector(config, delay_load=False, **kwargs):
 
     if projector_type == 'tome729_fstw_pemf':
         return ToMe_FSTW_PEMF(config, kwargs["vision_cfg"])
+    
+    if projector_type == 'tome729_fstw_pemf_mlp':
+        proj = ToMe_FSTW_PEMF(config, kwargs["vision_cfg"])
+        proj.enabled = False
+        return proj
 
     if projector_type == "linear":
         return nn.Linear(config.mm_hidden_size, config.hidden_size)
