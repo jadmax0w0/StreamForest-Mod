@@ -37,7 +37,8 @@ echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 PARTITION='video5'
 JOB_NAME=$(basename "$0" .sh)_$(date +"%Y%m%d_%H%M%S")
 
-OUTPUT_DIR=ckpt/stage5-driveft-qwen-siglip/${MID_RUN_NAME}
+# OUTPUT_DIR=ckpt/stage5-driveft-qwen-siglip/${MID_RUN_NAME}
+OUTPUT_DIR=/mnt/sto1/ckpt/sfqwen_o2o/${MID_RUN_NAME}
 mkdir -p ${OUTPUT_DIR}/runs
 
 # srun -p ${PARTITION} \

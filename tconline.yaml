@@ -1,6 +1,24 @@
 datasets:
 
+  - json_path: ./llava_video_100k.jsonl
+    data_root: .
+    sampling_strategy: all
+    video_read_type: imgs
+    anno_type: qwen
+  
+  - json_path: ./tarsier2_129k.jsonl
+    data_root: .
+    sampling_strategy: all
+    video_read_type: imgs
+    anno_type: qwen
+  
   - json_path: ./videochat_flash_3k.jsonl
+    data_root: .
+    sampling_strategy: all
+    video_read_type: imgs
+    anno_type: qwen
+  
+  - json_path: ./time_chat_online_139k_train_flt.jsonl
     data_root: .
     sampling_strategy: all
     video_read_type: imgs
