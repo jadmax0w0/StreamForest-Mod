@@ -25,7 +25,7 @@ DATA_VERSION_CLEAN=$(basename "$DATA_VERSION" .yaml)
 
 TUNABLE_PARTS="mm_mlp_adapter,mm_language_model"
 
-mm_projector_type=tome729_fstw_pemf
+mm_projector_type=tome729_fstw_pemf_mlp
 
 PROMPT_VERSION="qwen_2"
 
@@ -64,7 +64,7 @@ python -u llava/train/train_mem.py \
     --num_train_epochs 1 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 1
+    --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 1000 \
@@ -80,18 +80,16 @@ python -u llava/train/train_mem.py \
     --dataloader_num_workers 0 \
     --lazy_preprocess False \
     --report_to tensorboard \
-    --torch_compile True \
-    --torch_compile_backend "inductor" \
     --dataloader_drop_last True \
     --frames_upbound 512 \
     --frames_lowbound 4 \
     --time_msg short_online_v2 \
     --local_num_frames 1 \
-    --vision_encode_type image_video_memory_batch \
+    --vision_encode_type image_video_memory_clipped_batch \
     --sample_type dynamic_fps1 \
     --mm_pos_num_frames 1 \
     --mm_num_compress_latents 128 \
     --mm_num_compress_query_type pooling \
     --mm_close_init True \
-    --mm_local_num_frames 1 \
-    2>&1 | tee ${OUTPUT_DIR}/runs/${MID_RUN_NAME}.log
+    --mm_local_num_frames 1 #\
+    #2>&1 | tee ${OUTPUT_DIR}/runs/${MID_RUN_NAME}.log

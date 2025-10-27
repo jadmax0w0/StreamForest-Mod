@@ -224,8 +224,7 @@ class LlavaMetaForCausalLM(ABC):
         concat_images = torch.cat([image for image in images_list], dim=0)  # [T, C, H, W]
         split_sizes = [image.shape[0] for image in images_list] 
 
-        vision_tower = specified_vision_tower if specified_vision_tower is not None else self.get_model().get_vision_tower()
-        image_features = vision_tower(concat_images)
+        image_features = self.get_model().get_vision_tower()(concat_images)
         """
         (Pdb) p concat_images.shape
             torch.Size([66, 3, 384, 384])
@@ -392,7 +391,7 @@ class LlavaMetaForCausalLM(ABC):
         # input: list output: list image和video没法concat呀
         # print("images_list shape: ", images_list[0].shape)
         batch_size = 128
-        concat_images = torch.cat([image for image in images_list], dim=0)
+        concat_images = torch.cat([image for image in images_list], dim=0)  # [sum(T), C, h, w]
         split_sizes = [image.shape[0] for image in images_list]
 
         # 批量推理
@@ -401,12 +400,12 @@ class LlavaMetaForCausalLM(ABC):
 
         for i in range(0, concat_images.shape[0], batch_size):
             batch = concat_images[i:i + batch_size]
-            batch_features = vision_model(batch)
+            batch_features = vision_model(batch)  # [batch, L=729, D=1152]
             all_features.append(batch_features)
 
-        videos_or_images_features = torch.cat(all_features, dim=0)
+        videos_or_images_features = torch.cat(all_features, dim=0)  # [sum(T), L=729, D=1152]
         # print("videos_or_images_features: ", videos_or_images_features.shape)
-        per_videos_or_images_features = torch.split(videos_or_images_features, split_sizes, dim=0)  # tuple, (dim_1, 729, 4096)
+        per_videos_or_images_features = torch.split(videos_or_images_features, split_sizes, dim=0)  # tuple, (eachT, 729, 4096)
 
         bs = len(images_list)
 
@@ -430,14 +429,82 @@ class LlavaMetaForCausalLM(ABC):
 
         if has_video:
             concat_videos = torch.cat([video.reshape(video.shape[0] // mm_local_num_frames, -1, video.shape[-1]) for video in concat_videos], dim=0)
-            videos_features = self.get_model().mm_projector(concat_videos, local_num_frames=mm_local_num_frames)
+            #                                        ^ 把每 local_frames 帧的 matrix (729*1152 size) 沿着第一个维度并起来 (2*729*1152->1*1558*1152)
+            videos_features = self.get_model().mm_projector(concat_videos, local_num_frames=mm_local_num_frames)  # [66, 729, 1152] -> [1, 6041, 3584]
 
         if has_image and has_video:
-            raise "<<<encode_image_video_memory error>>> I dont like process image and video at the same time!!!"
+            raise "<<<encode_image_video_memory error>>> I dont like process image and video at the same time!!!"  # 这里的 batch 应该不是训练 batch, 而是一个数据点中有多少个视频, 把这些视频组成一个 batch
         elif has_image:
             all_videos_or_images_features = [images_features]
         elif has_video:
-            all_videos_or_images_features = [videos_features]
+            all_videos_or_images_features = [videos_features]  # why wrap it?
+        else:
+            raise ValueError(images_list)
+
+        # print("project video shape: ", all_videos_or_images_features[0].shape)
+        return all_videos_or_images_features
+    
+    def encode_image_video_memory_clipped_batch(self, images_list, video_idx_in_batch, clip_split_sizes):
+        assert len(video_idx_in_batch)<2, "<<<encode_image_video_memory>>> i dont want to process multiple image or video"
+        assert len(video_idx_in_batch) == len(clip_split_sizes), f"video count in batch ({len(video_idx_in_batch)}) should be equal to the length of clip_split_sizes ({len(clip_split_sizes)})"
+
+        batch_size = 128
+        concat_images = torch.cat([image for image in images_list], dim=0)  # [sum(T), C, h, w]
+        split_sizes = [image.shape[0] for image in images_list]
+
+        # 批量推理
+        vision_model = self.get_model().get_vision_tower()
+        all_features = []
+
+        for i in range(0, concat_images.shape[0], batch_size):
+            batch = concat_images[i:i + batch_size]
+            batch_features = vision_model(batch)  # [batch, L=729, D=1152]
+            all_features.append(batch_features)
+
+        videos_or_images_features = torch.cat(all_features, dim=0)  # [sum(T), L=729, D=1152]
+        per_videos_or_images_features = torch.split(videos_or_images_features, split_sizes, dim=0)  # tuple, (eachT, 729, 4096)
+
+        bs = len(images_list)
+
+        concat_images = []
+        valid_videos = []
+        for idx, feat in enumerate(per_videos_or_images_features):
+            if idx in video_idx_in_batch:
+                valid_videos.append(feat)
+            else:
+                concat_images.append(feat)
+        
+        has_image = len(concat_images) > 0
+        has_video = len(valid_videos) > 0
+        # assert not has_image, "images are temporarily not allowed when clipping"
+
+        # mm_local_num_frames = getattr(self.config, "mm_local_num_frames", -1)
+        mm_local_num_frames = 1
+        assert mm_local_num_frames != -1
+
+        if has_image:
+            concat_images = torch.cat([image for image in concat_images], dim=0)
+            images_features = self.get_model().mm_projector(concat_images, local_num_frames=1, is_image=True)
+
+        if has_video:
+            # Clip-ify each video
+            valid_videos = [torch.split(vid, csplit) for vid, csplit in zip(valid_videos, clip_split_sizes)]
+            # valid_videos[i] = torch.split(valid_videos[i], clip_split_size)
+            
+            memory_features = []
+            for clips in valid_videos:
+                videos_features = self.get_model().mm_projector(valid_videos, local_num_frames=mm_local_num_frames)  # [66, 729, 1152] -> [1, 6041, 3584]
+                # TODO: memory
+                # TODO: clear memory between processing different videos (但注意这里的 batch 不是真正的 batch, 只是说明一次推理中有多个视频)
+                # 中间清理记忆, 就是把单次推理中的每个视频单独处理记忆 (每个视频都有自己的 stm, ltm); 如果不清理的话, 就是把所有视频片段当做来自同一个视频的
+                memory_features.append(videos_features)
+
+        if has_image and has_video:
+            raise "<<<encode_image_video_memory error>>> I dont like process image and video at the same time!!!"  # 这里的 batch 应该不是训练 batch, 而是一个数据点中有多少个视频, 把这些视频组成一个 batch
+        elif has_image:
+            all_videos_or_images_features = [images_features]
+        elif has_video:
+            all_videos_or_images_features = [videos_features]  # why wrap it?
         else:
             raise ValueError(images_list)
 
@@ -626,11 +693,22 @@ class LlavaMetaForCausalLM(ABC):
         raise NotImplementedError("No")
 
         
-    def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities=["image"], image_sizes=None):
-        import pdb
-        pdb.set_trace()
+    def prepare_inputs_labels_for_multimodal(
+            self,
+            input_ids,
+            position_ids,
+            attention_mask,
+            past_key_values,
+            labels,
+            images,
+            modalities=["image"],
+            image_sizes=None
+    ):
         # Note position_ids is none here
-        assert type(modalities) is list, modalities
+        assert type(modalities) is list, modalities  # 这里 images 的 batch 应该不是训练 batch, 而是一个数据点中有多少个视频, 把这些视频组成一个 batch
+
+        rank0_print(len(images), len(images[0]), images[0][0].shape)
+        rank0_print(f"{len(modalities)=}")
         
         vision_tower = self.get_vision_tower()
         # rank_print(modalities)
@@ -640,9 +718,10 @@ class LlavaMetaForCausalLM(ABC):
         if type(images) is list or images.ndim == 5:
             clip_split_sizes = None
             # If the input `images` contains a list of clipped video clips...
-            if len(images) == 1 and isinstance(images[0], list):  # images: [one_video=[clips]]
-                clip_split_sizes = [clip.shape[0] for clip in images[0]]
-                images = [torch.cat(images[0], dim=0)]
+            # ...unify `images` data format with the input formed when videos in this batch are not clipped
+            if isinstance(images[0], list):  # images: [batch_video0=[clips], batch_video1, ...]
+                clip_split_sizes = [tuple(clip.shape[0] for clip in imgseq) for imgseq in images]
+                images = [torch.cat(imgseq, dim=0) for imgseq in images]  # images: [batch_video0=tensor, batch_video1, ...]
             
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
@@ -659,7 +738,7 @@ class LlavaMetaForCausalLM(ABC):
                 else:
                     images_list.append(image.unsqueeze(0))
             
-            vision_encode_type = getattr(self.config, "vision_encode_type", "image")  # image
+            vision_encode_type = getattr(self.config, "vision_encode_type", "image")  # image_video_memory_batch
             mm_patch_merge_type = getattr(self.config, "mm_patch_merge_type", "flat")  # flat
             image_aspect_ratio = getattr(self.config, "image_aspect_ratio", "square")  # square
             frame_aspect_ratio = getattr(self.config, "frame_aspect_ratio", "square")  # square
@@ -699,7 +778,7 @@ class LlavaMetaForCausalLM(ABC):
             # rank0_print(self.config)
             # TODO image: share vit&connector for image/video, image_video:, video
             if vision_encode_type == "image": # image backbone, process video by frame
-                image_features = self.encode_image(images_list, specified_vision_tower=vision_tower)
+                image_features = self.encode_image(images_list)
             elif vision_encode_type == "video": # video backbone, process video with compress
                 image_features = self.encode_video(images_list, video_idx_in_batch=video_idx_in_batch)
             elif vision_encode_type == "image_video": # image backbone, process video with compress
@@ -711,6 +790,8 @@ class LlavaMetaForCausalLM(ABC):
                 image_features = self.encode_image_video_memory(images_list, video_idx_in_batch=video_idx_in_batch) 
             elif vision_encode_type == "image_video_memory_batch":
                 image_features = self.encode_image_video_memory_batch(images_list, video_idx_in_batch=video_idx_in_batch) 
+            elif vision_encode_type == "image_video_memory_clipped_batch":
+                image_features = self.encode_image_video_memory_clipped_batch(images_list, video_idx_in_batch=video_idx_in_batch, clip_split_sizes=clip_split_sizes)
             
             elif vision_encode_type == "video_image": #UMT当单帧时，video_idx_in_batch为[]；当多帧时，video_idx_in_batch是[0]
                 image_features = self.encode_video_image(images_list, video_idx_in_batch=video_idx_in_batch)
