@@ -42,7 +42,7 @@ class LlavaMetaModel:
             self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower.config)
 
             from .mymod.memory_modules import Memories
-            self.mem = Memories(stm_storage=-1, memory_zip_method='interleave')
+            self.memory = Memories(stm_storage=-1, memory_zip_method='interleave')
 
             if "unpad" in getattr(config, "mm_patch_merge_type", ""):
                 self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=self.dtype))
@@ -499,14 +499,14 @@ class LlavaMetaForCausalLM(ABC):
                 # Clip-ify curr video
                 clips = torch.split(video_features_reshpaed, clip_factors)  # [Tclip, 27, 27, 3584]
                 # Do memory operations
-                self.get_model().mem.process_videos_embeddings(clips)
+                self.get_model().memory.process_videos_embeddings(clips)
                 # Extract memory features
-                mem_features = self.get_model().mem.prepare_input_only_visual()
+                mem_features = self.get_model().memory.prepare_input_only_visual()
                 # Save encoded memory features
                 memory_features.append(mem_features)
                 # Clear memory between processing different videos (?) (但注意这里的 batch 不是真正的 batch, 只是说明一次推理中有多个视频)
                 # 中间清理记忆, 就是把单次推理中的每个视频单独处理记忆 (每个视频都有自己的 stm, ltm); 如果不清理的话, 就是把所有视频片段当做来自同一个视频的
-                self.get_model().mem.clear_states()
+                self.get_model().memory.clear_states()
 
         if has_image and has_video:
             raise "<<<encode_image_video_memory error>>> I dont like process image and video at the same time!!!"  # 这里的 batch 应该不是训练 batch, 而是一个数据点中有多少个视频, 把这些视频组成一个 batch

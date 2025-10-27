@@ -23,7 +23,7 @@ LLM_VERSION_CLEAN=$(basename "$LLM_VERSION")
 DATA_VERSION="tconline.yaml"     #Download from https://huggingface.co/datasets/MCG-NJU/StreamForest-Annodata/tree/main/data_list
 DATA_VERSION_CLEAN=$(basename "$DATA_VERSION" .yaml)
 
-TUNABLE_PARTS="mm_mlp_adapter,mm_language_model"
+TUNABLE_PARTS="mm_mlp_adapter,mm_language_model,mm_memory"
 
 mm_projector_type=tome729_fstw_pemf_mlp
 
