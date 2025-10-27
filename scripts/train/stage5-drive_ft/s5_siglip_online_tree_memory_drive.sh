@@ -17,7 +17,8 @@ mkdir -p $TRITON_CACHE_DIR
 VISION_MODEL_VERSION="/home/lyx/model/siglip14-384"
 VISION_MODEL_VERSION_CLEAN=$(basename "$VISION_MODEL_VERSION")
 
-LLM_VERSION="/home/lyx/model/sforest-qwen"     #Ours hf_weight or your stage4 ckpt
+# LLM_VERSION="/home/lyx/model/sforest-qwen"     #Ours hf_weight or your stage4 ckpt
+LLM_VERSION="ckpt/weight_init/weight243-qwen"
 LLM_VERSION_CLEAN=$(basename "$LLM_VERSION")
 
 DATA_VERSION="tconline.yaml"     #Download from https://huggingface.co/datasets/MCG-NJU/StreamForest-Annodata/tree/main/data_list
