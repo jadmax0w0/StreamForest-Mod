@@ -863,6 +863,68 @@ class Memories(nn.Module):
         self.token_cnt_after_drops.append(inputs_embeds_new.shape[1])
 
         return input_ids_new, inputs_embeds_new, labels_new, position_ids_new, attention_mask_new, mem_grid_thw, second_per_grid_ts_new
+    
+    def prepare_input_only_visual(self, device = None, dtype = None, requires_grad = None):
+        """
+        Returns:
+            memory_features (Tensor): shaped `[B=1, L=flattened memory token count, D=3584]`
+        """
+        # Get memory list
+        stm_mem = self.stm.get_streaming_memory(as_one_tensor=False)    # [1, frms, stm_frm_patch_cnt, d_model] x stm_clip_cnt
+        ltm_mem = self.ltm.get_streaming_memory(as_one_tensor=False)    # [1, frms, d_model] x ltm_clip_cnt
+        printr(0, f"STM clip count: {len(stm_mem)}, LTM clip count: {len(ltm_mem)}")
+        # Extend memory list to the same length
+        mem_len = max(len(stm_mem), len(ltm_mem))
+        stm_mem = [None] * (mem_len - len(stm_mem)) + stm_mem   # Prepend None's
+        ltm_mem += [None] * (mem_len - len(ltm_mem))            # Append None's
+
+        # Prepare new inputs
+        mem_embeds = torch.empty(0, device=device, dtype=dtype, requires_grad=requires_grad)
+
+        # Concat memory embeds
+        for lmem, smem in zip(ltm_mem, stm_mem):
+            lmem, smem = None if lmem is None else lmem.data, None if smem is None else smem.data
+            # Zip STM and LTM
+            if "inter" in self.memory_zip_method.lower():
+                # Concat LTM
+                if lmem is not None:
+                    mem_embeds = mem_embeds.to(dtype=lmem.dtype, device=lmem.device)
+                    mem_embeds = torch.cat([mem_embeds, lmem], dim=1)
+                # Concat separator tokens (for qwen, they are `<|vision_end|>` and `<|vision_start|>`)
+                if lmem is not None and smem is not None:
+                    # mem_embeds = torch.cat([mem_embeds, vision_end_embed.unsqueeze(0)], dim=1)
+                    # mem_embeds = torch.cat([mem_embeds, vision_start_embed.unsqueeze(0)], dim=1)
+                    pass
+                # Concat STM
+                if smem is not None:
+                    smem = smem.flatten(1, 2)
+                    mem_embeds = mem_embeds.to(dtype=smem.dtype, device=smem.device)
+                    mem_embeds = torch.cat([mem_embeds, smem], dim=1)
+            elif "stm_over" in self.memory_zip_method.lower():
+                # Concat STM
+                if smem is not None:
+                    smem = smem.flatten(1, 2)
+                    mem_embeds = mem_embeds.to(dtype=smem.dtype, device=smem.device)
+                    mem_embeds = torch.cat([mem_embeds, smem], dim=1)
+                # Concat LTM if STM does not exist
+                elif lmem is not None:
+                    mem_embeds = mem_embeds.to(dtype=lmem.dtype, device=lmem.device)
+                    mem_embeds = torch.cat([mem_embeds, lmem], dim=1)
+            elif "ltm_over" in self.memory_zip_method.lower():
+                # Concat LTM
+                if lmem is not None:
+                    mem_embeds = mem_embeds.to(dtype=lmem.dtype, device=lmem.device)
+                    mem_embeds = torch.cat([mem_embeds, lmem], dim=1)
+                # Concat STM if LTM does not exist
+                elif smem is not None:
+                    smem = smem.flatten(1, 2)
+                    mem_embeds = mem_embeds.to(dtype=smem.dtype, device=smem.device)
+                    mem_embeds = torch.cat([mem_embeds, smem], dim=1)
+            else:
+                raise ValueError(f"Memory zip method {self.memory_zip_method} does not exist")
+        
+        return mem_embeds
+        
 
     def clear_states(self):
         printr(0, "Clearing memory")

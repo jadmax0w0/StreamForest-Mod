@@ -41,6 +41,9 @@ class LlavaMetaModel:
             self.vision_tower = build_vision_tower(config, delay_load=delay_load)
             self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower.config)
 
+            from .mymod.memory_modules import Memories
+            self.mem = Memories(stm_storage=-1, memory_zip_method='interleave')
+
             if "unpad" in getattr(config, "mm_patch_merge_type", ""):
                 self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=self.dtype))
             if "nopad" in getattr(config, "mm_patch_merge_type", "") and getattr(self.config, "mm_newline_position", "nothing") != "nothing":
@@ -161,7 +164,7 @@ def unpad_image(tensor, original_size, is_frame=False):
 class LlavaMetaForCausalLM(ABC):
 
     @abstractmethod
-    def get_model(self):
+    def get_model(self) -> LlavaMetaModel:
         pass
 
     def get_vision_tower(self):
@@ -487,24 +490,30 @@ class LlavaMetaForCausalLM(ABC):
             images_features = self.get_model().mm_projector(concat_images, local_num_frames=1, is_image=True)
 
         if has_video:
-            # Clip-ify each video
-            valid_videos = [torch.split(vid, csplit) for vid, csplit in zip(valid_videos, clip_split_sizes)]
-            # valid_videos[i] = torch.split(valid_videos[i], clip_split_size)
-            
             memory_features = []
-            for clips in valid_videos:
-                videos_features = self.get_model().mm_projector(valid_videos, local_num_frames=mm_local_num_frames)  # [66, 729, 1152] -> [1, 6041, 3584]
-                # TODO: memory
-                # TODO: clear memory between processing different videos (但注意这里的 batch 不是真正的 batch, 只是说明一次推理中有多个视频)
+            for video, clip_factors in zip(valid_videos, clip_split_sizes):  # [sum(T) of a video, L=729=27*27, C=1152] x videos count
+                video_features = self.get_model().mm_projector(video, local_num_frames=mm_local_num_frames)  # e.g. [66, 729, 1152] -> [66, 729, 3584]
+                # Reshape curr video
+                hw = self.get_model().get_vision_tower().config.image_size // self.get_model().get_vision_tower().config.patch_size
+                video_features_reshpaed = video_features.contiguous().view(video_features.shape[0], hw, hw, video_features.shape[-1])
+                # Clip-ify curr video
+                clips = torch.split(video_features_reshpaed, clip_factors)  # [Tclip, 27, 27, 3584]
+                # Do memory operations
+                self.get_model().mem.process_videos_embeddings(clips)
+                # Extract memory features
+                mem_features = self.get_model().mem.prepare_input_only_visual()
+                # Save encoded memory features
+                memory_features.append(mem_features)
+                # Clear memory between processing different videos (?) (但注意这里的 batch 不是真正的 batch, 只是说明一次推理中有多个视频)
                 # 中间清理记忆, 就是把单次推理中的每个视频单独处理记忆 (每个视频都有自己的 stm, ltm); 如果不清理的话, 就是把所有视频片段当做来自同一个视频的
-                memory_features.append(videos_features)
+                self.get_model().mem.clear_states()
 
         if has_image and has_video:
             raise "<<<encode_image_video_memory error>>> I dont like process image and video at the same time!!!"  # 这里的 batch 应该不是训练 batch, 而是一个数据点中有多少个视频, 把这些视频组成一个 batch
         elif has_image:
             all_videos_or_images_features = [images_features]
         elif has_video:
-            all_videos_or_images_features = [videos_features]  # why wrap it?
+            all_videos_or_images_features = memory_features
         else:
             raise ValueError(images_list)
 
