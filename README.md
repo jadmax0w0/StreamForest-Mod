@@ -61,6 +61,7 @@ cd StreamForest
 conda create --name StreamForest python=3.10
 conda activate StreamForest
 pip install -r requirements.txt
+python3 download_hf.py
 ```
 
 
