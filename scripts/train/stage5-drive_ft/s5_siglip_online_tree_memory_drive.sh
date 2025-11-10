@@ -50,7 +50,7 @@ mkdir -p ${OUTPUT_DIR}/runs
 #     --cpus-per-task=16 \
 #     --kill-on-bad-exit=1 \
 deepspeed llava/train/train_mem.py \
-    --deepspeed scripts/deepspeed/zero2.json \
+    --deepspeed scripts/deepspeed/zero3.json \
     --model_name_or_path ${LLM_VERSION} \
     --version ${PROMPT_VERSION} \
     --data_path ${DATA_VERSION} \
