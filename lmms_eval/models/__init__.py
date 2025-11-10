@@ -18,8 +18,8 @@ AVAILABLE_MODELS = {
     "llava_ov": "LLaVa_OV",
     
     # "longva": "LongVA",
-    # "qwen2_vl": "Qwen2_VL",
-    # "qwen2_5_vl": "Qwen2_5_VL",
+    "qwen2_vl": "Qwen2_VL",
+    "qwen2_5_vl": "Qwen2_5_VL",
     
 
 }

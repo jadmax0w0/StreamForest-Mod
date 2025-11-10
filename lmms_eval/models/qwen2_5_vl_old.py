@@ -1,7 +1,7 @@
 import base64
 from io import BytesIO
 from typing import List, Optional, Tuple, Union
-import time
+
 import decord
 import numpy as np
 import torch
@@ -9,13 +9,25 @@ from accelerate import Accelerator, DistributedType
 from loguru import logger as eval_logger
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
-import torch.nn.functional as F
+from transformers import (
+    AutoProcessor,
+    AutoTokenizer,
+    Qwen2_5_VLForConditionalGeneration,
+)
+import time
 from lmms_eval import utils
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
-# from lmms_eval.models.model_utils.load_video import load_video_decord
+from lmms_eval.models.model_utils.load_video import read_video_pyav_base64
+
+try:
+    # from qwen_vl_utils import process_vision_info
+    from lmms_eval.models.model_utils.my_qwen_utils import process_vision_info
+except ImportError:
+    eval_logger.warning("Failed to import qwen_vl_utils; Please install it via `pip install qwen-vl-utils`")
+
+
 try:
     from petrel_client.client import Client
     client = Client('~/petreloss.conf')
@@ -24,46 +36,42 @@ except Exception as e:
     client = None
 
 
-try:
-    from qwen_vl_utils import process_vision_info
-except ImportError:
-    eval_logger.warning("Failed to import qwen_vl_utils; Please install it via `pip install qwen-vl-utils`")
-
-
-@register_model("qwen2_5_vl")
-class Qwen2_VL(lmms):
+@register_model("qwen2_5_vl_old")
+class Qwen2_5_VL(lmms):
     """
-    Qwen2_VL Model
-    "https://github.com/QwenLM/Qwen2-VL"
+    Qwen2.5_VL Model
+    "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct"
     """
 
     def __init__(
         self,
-        pretrained: str = "Qwen/Qwen2-VL-7B-Instruct",
+        pretrained: str = "Qwen/Qwen2.5-VL-7B-Instruct",
         device: Optional[str] = "cuda",
-        device_map: Optional[str] = "cuda",
+        device_map: Optional[str] = "auto",
         batch_size: Optional[Union[int, str]] = 1,
         use_cache=True,
         use_flash_attention_2: Optional[bool] = False,
-        max_pixels: int = 12845056,
-        min_pixels: int = 3136,
+        min_pixels: int = 12845056,
+        max_pixels: int = 3136,
         max_num_frames: int = 16,
-        max_frames_num: Optional[int] = 16,
-        drop_method = "feature",
-        drop_threshold = 0.5,
-        drop_absolute = True,
-        dr_save_path = None,
+        max_frames_num: int = 16,
+        use_custom_video_loader: Optional[bool] = False,
+        fps: Optional[float] = None,  # Only applicable if use_custom_video_loader is True
+        max_image_size: Optional[int] = None,  # Only applicable if use_custom_video_loader is True
         **kwargs,
     ) -> None:
         super().__init__()
         # Do not use kwargs for now
-        # assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
-        self.drop_method = drop_method
-        self.drop_threshold = drop_threshold
-        self.drop_absolute = drop_absolute
-        self.dr_save_path = dr_save_path
-        
-        self.time_msg = 'short'
+        assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
+
+        self.use_custom_video_loader = use_custom_video_loader
+        self.fps = fps
+        # if self.fps and not self.use_custom_video_loader:
+        #     raise ValueError("FPS is only applicable if use_custom_video_loader is True")
+        self.max_image_size = max_image_size
+        if self.max_image_size and not self.use_custom_video_loader:
+            raise ValueError("max_image_size is only applicable if use_custom_video_loader is True")
+
         accelerator = Accelerator()
         if accelerator.num_processes > 1:
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
@@ -78,7 +86,7 @@ class Qwen2_VL(lmms):
         if use_flash_attention_2:
             self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 pretrained,
-                torch_dtype="auto",
+                torch_dtype=torch.bfloat16,
                 device_map=self.device_map,
                 attn_implementation="flash_attention_2",
             ).eval()
@@ -87,8 +95,8 @@ class Qwen2_VL(lmms):
         self.processor = AutoProcessor.from_pretrained(pretrained, max_pixels=max_pixels, min_pixels=min_pixels)
         self.max_pixels = max_pixels
         self.min_pixels = min_pixels
-        self.max_num_frames = max_frames_num
-        self.max_frames_num = max_frames_num
+        self.max_num_frames = max_num_frames
+        self.processor = AutoProcessor.from_pretrained(pretrained, max_pixels=max_pixels, min_pixels=min_pixels)
         self._tokenizer = AutoTokenizer.from_pretrained(pretrained)
 
         self._config = self.model.config
@@ -111,7 +119,7 @@ class Qwen2_VL(lmms):
             self._world_size = self.accelerator.num_processes
         else:
             self._rank = 0
-            self._word_size = 1
+            self._world_size = 1
 
     @property
     def config(self):
@@ -155,7 +163,7 @@ class Qwen2_VL(lmms):
         return self._world_size
 
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
-        raise NotImplementedError("Loglikelihood is not implemented for Qwen2_VL")
+        raise NotImplementedError("Loglikelihood is not implemented for Qwen2.5_VL")
 
     def flatten(self, input):
         new_list = []
@@ -163,45 +171,6 @@ class Qwen2_VL(lmms):
             for j in i:
                 new_list.append(j)
         return new_list
-
-
-    def load_video(self, video_path, max_frames_num, media_dict):
-        from lmms_eval.video_utils import VIDEO_READER_FUNCS
-        if type(video_path) != str:
-            assert len(video_path) == 1, video_path
-            video_path = video_path[0]
-        if 'start' in media_dict:
-            clip = [media_dict['start'], media_dict['end']]
-        else:
-            clip = None
-        # print("-------------------------------------------------------------------")
-        # print(media_dict['video_read_type'], clip, video_path, max_frames_num)    
-        if 'fps' in media_dict:
-            frames, frame_indices, fps, duration = VIDEO_READER_FUNCS[media_dict['video_read_type']](video_path=video_path, num_frames=max_frames_num, sample='rand', fix_start=None, min_num_frames=4, max_num_frames=max_frames_num, client=client, clip=clip, local_num_frames=1, fps=media_dict['fps'])
-        else:
-            frames, frame_indices, fps, duration = VIDEO_READER_FUNCS[media_dict['video_read_type']](video_path=video_path, num_frames=max_frames_num, sample='rand', fix_start=None, min_num_frames=4, max_num_frames=max_frames_num, client=client, clip=clip, local_num_frames=1)
-
-        resized_frames = [] 
-        for frame in frames: 
-            img = Image.fromarray(frame) 
-            img_resized = img.resize((224, 224), Image.BILINEAR) 
-            resized_frames.append(np.array(img_resized)) 
-        
-        frames = np.stack(resized_frames, axis=0)
-        
-        sec = [str(round(f / fps, 1)) for f in frame_indices]
-
-        if self.time_msg is not None and sec is not None:
-            if self.time_msg == 'short':
-                msg = f"\nThe video segment contains {len(sec)} frames uniformly sampled from the past {(float(sec[-1])-float(sec[0])):.0f} seconds up to the present moment. "
-            else:
-                # " " should be added in the start and end
-                msg = f"\nAnalyze the content of the {len(sec)} frames video segment uniformly sampled from the past {(float(sec[-1])-float(sec[0])):.0f} seconds up to the present moment. "
-        else:
-            msg = ""
-        # print(frames.shape)
-        return frames, msg
-
 
     def generate_until(self, requests: List[Instance]) -> List[str]:
         res = []
@@ -227,7 +196,8 @@ class Qwen2_VL(lmms):
             task = task[0]
             split = split[0]
             visuals = [doc_to_visual[0](self.task_dict[task][split][ids]) for ids in doc_id]
-            visuals = self.flatten(visuals)    
+            visuals = self.flatten(visuals)
+
             gen_kwargs = all_gen_kwargs[0]
 
             # Set default values for until and max_new_tokens
@@ -241,61 +211,96 @@ class Qwen2_VL(lmms):
                 elif not isinstance(until, list):
                     raise ValueError(f"Expected `gen_kwargs['until']` to be of type Union[str,list] but got {type(until)}")
 
-            if isinstance(contexts, tuple):
-                contexts = list(contexts)
+            # if isinstance(contexts, tuple):
+            #     contexts = list(contexts)
 
-            for i in range(len(contexts)):
-                if "<image>" in contexts[i]:
-                    contexts[i] = contexts[i].replace("<image>", "")
+            # for i in range(len(contexts)):
+            #     for j in range(32):
+            #         if f"<image {j}>" in contexts[i]:
+            #             contexts[i] = contexts[i].replace(f"<image {j}>", "<image>")
+            #         if f"\\<image {j}\\>" in contexts[i]:
+            #             contexts[i] = contexts[i].replace(f"\\<image {j}\\>", "<image>")
+            # if "<image>" in contexts[i]:
+            #     contexts[i] = contexts[i].replace("<image>", "")
+            # print(contexts[i])
+
+            # for i in range(len(contexts)):
+            #     if "<image>" in contexts[i]:
+            #         contexts[i] = contexts[i].replace("<image>", "")
 
             messages = []
             processed_visuals = []
             for i, context in enumerate(contexts):
-                if "<image>" in context:
-                    context = context.replace("<image>", "")
+                # context += "\nPlease think step by step."
+                # if "<image>" in context:
+                #     context = context.replace("<image>", "")
 
                 message = [{"role": "system", "content": "You are a helpful assistant."}]
-                
-                # print("visuals: ", visuals)
-                # print("len of visuals:",len(visuals))
-                
+
                 if len(visuals) > 0:
-                    if len(visuals) > 1:
-                        assert len(visuals) == 2, visuals
-                        visual = visuals[0]
-                        media_dict = visuals[1]
+                    visual = visuals[i] if i < len(visuals) else None
+                    if isinstance(visual, str) and visual.endswith((".mp4", ".avi", ".mov")):  # Video file
+                        if self.use_custom_video_loader:
+                            visual = read_video_pyav_base64(visual, num_frm=self.max_num_frames, fps=self.fps, img_format="JPEG", max_image_size=self.max_image_size)
+                            image_contents = list(map(lambda x: f"data:image/jpeg;base64,{x}", visual))
+                            message.append({"role": "user", "content": [{"type": "video", "video": image_contents}, {"type": "text", "text": context}]})
+                        else:
+                            # # if 's3://' in visuals:
+                            # #     video_bytes = client.get(visuals)
+                            # vr = decord.VideoReader(visual)
+                            # first_frame = vr[0].asnumpy()
+                            # height, width = first_frame.shape[:2]
+                            # # max_pixels = height * width
+                            message.append({"role": "user", "content": [{"type": "video", "video": visual, "total_pixels":3584 * 28 * 28, "min_pixels":16 * 28 * 28 }, {"type": "text", "text": context}]})
+                    elif isinstance(visual, Image.Image):  # Single image
+                        base64_image = visual.convert("RGB")
+                        buffer = BytesIO()
+                        base64_image.save(buffer, format="JPEG")
+                        base64_bytes = base64.b64encode(buffer.getvalue())
+                        base64_string = base64_bytes.decode("utf-8")
+                        message.append({"role": "user", "content": [{"type": "image", "image": f"data:image/jpeg;base64,{base64_string}"}, {"type": "text", "text": context}]})
+                    elif isinstance(visual, (list, tuple)) and all(isinstance(v, Image.Image) for v in visual):  # Multiple images
+                        image_content = []
+                        for v in visual:
+                            base64_image = v.convert("RGB")
+                            buffer = BytesIO()
+                            base64_image.save(buffer, format="JPEG")
+                            base64_bytes = base64.b64encode(buffer.getvalue())
+                            base64_string = base64_bytes.decode("utf-8")
+                            image_content.append({"type": "image", "image": f"data:image/jpeg;base64,{base64_string}"})
+                        message.append({"role": "user", "content": image_content + [{"type": "text", "text": context}]})
                     else:
-                        visual = visuals
-                        media_dict = {'video_read_type': 'decord'}
-                    frames, time_msg = self.load_video(visual, self.max_frames_num, media_dict)
-                    context = time_msg + context
-                    message.append({"role": "user", "content": [{"type": "video", "video": visual, "max_pixels": self.max_pixels}, {"type": "text", "text": context}]})
-                    # print(message)
+                        message.append({"role": "user", "content": [{"type": "text", "text": context}]})
                 else:
                     message.append({"role": "user", "content": [{"type": "text", "text": context}]})
 
                 messages.append(message)
+            # print("\n\n<<< messages: ", messages)
 
-            texts = [self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True) for msg in messages]
-            image_inputs=None
-            video_inputs=[torch.tensor(frames, dtype=torch.float32).permute(0,3,1,2)]
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            image_inputs, video_inputs = process_vision_info(messages,client=client)
+            # print("list len:", len(video_inputs))
+            print("video shape:", video_inputs[0].shape)
             
-            video_duration = video_inputs[0].shape[0]
+            video_duration=video_inputs[0].shape[0]
             start_time = time.time()
             
-            inputs = self.processor(text=texts, images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+            inputs = self.processor(
+                text=text,
+                images=image_inputs,
+                videos=video_inputs,
+                # fps=self.fps,
+                padding=True,
+                return_tensors="pt",
+            )
 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print("<<<Inference Info>>>","Vision Encoder infer_time:",round(elapsed_time,3),"video_duration:",video_duration,"<<</Inference Info>>>")
-            
             if self.device_map == "auto":
                 inputs = inputs.to("cuda")
             else:
                 inputs = inputs.to(self.device)
 
             if "max_new_tokens" not in gen_kwargs:
-                gen_kwargs["max_new_tokens"] = 128
+                gen_kwargs["max_new_tokens"] = 4096
             if "temperature" not in gen_kwargs:
                 gen_kwargs["temperature"] = 0
             if "top_p" not in gen_kwargs:
@@ -305,8 +310,6 @@ class Qwen2_VL(lmms):
 
             pad_token_id = self.tokenizer.pad_token_id
 
-            start_time = time.time()
-            
             cont = self.model.generate(
                 **inputs,
                 eos_token_id=self.tokenizer.eos_token_id,
@@ -315,25 +318,19 @@ class Qwen2_VL(lmms):
                 temperature=gen_kwargs["temperature"],
                 top_p=gen_kwargs["top_p"],
                 num_beams=gen_kwargs["num_beams"],
-                max_new_tokens=gen_kwargs["max_new_tokens"],
+                max_new_tokens=4096,
                 use_cache=self.use_cache,
-                # tconline
-                drop_method=self.drop_method,
-                drop_threshold=self.drop_threshold,
-                drop_absolute=self.drop_absolute,
-                dr_save_path=self.dr_save_path,
             )
 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print("<<<Inference Info>>>","LLM infer_time:",round(elapsed_time,3),"video_duration:",video_duration,"<<</Inference Info>>>")
-            
             generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, cont)]
             answers = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print("<<<Inference Info>>>","infer_time:",round(elapsed_time,3),"video_duration:",video_duration,"<<</Inference Info>>>")
+            
+            # print("\n<<< answers: ", answers)
             for i, ans in enumerate(answers):
-                for term in until:
-                    if len(term) > 0:
-                        ans = ans.split(term)[0]
                 answers[i] = ans
 
             for ans, context in zip(answers, contexts):

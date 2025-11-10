@@ -22,10 +22,10 @@ except Exception as e:
 
 DATA_LIST = {
     # "ava": "pnorm2:s3://ava/frames/clip/",
-    "ava": "/mnt/petrelfs/share_data/zengxiangyu/Tmp/AVA/frames_1fps/",
-    "tao": "pnorm2:s3://tao/frames/val/",
-    "coin": "shddnew_zxy:s3://COIN/",
-    "hirest": "pnorm2:s3://HiREST/videos/",
+    "ava": "/mnt/sto1/dataset/ovbench/videos/ava_nopost",
+    "tao": "/mnt/sto1/dataset/ovbench/videos/tao-links",
+    "coin": "/mnt/sto1/dataset/ovbench/videos/coin",
+    "hirest": "/mnt/sto1/dataset/ovbench/videos/HiREST",
 }
 
 # hf_home = os.getenv("HF_HOME", "./~/.cache/huggingface")

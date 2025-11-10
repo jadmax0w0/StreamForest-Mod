@@ -1,7 +1,7 @@
-dataset_path: anno/eval/OVBench
+dataset_path: /home/lyx/project/o2o_proj/o2o/lmms_eval/tasks/ovbench_window32/ovbench_anno
 dataset_kwargs:
   token: True
-  cache_dir: anno/eval/OVBench
+  cache_dir: /mnt/sto1/dataset/ovbench/videos
   video: True
 generation_kwargs:
   max_new_tokens: 16
